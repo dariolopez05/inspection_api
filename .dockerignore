@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.py[cod]
+.git/
+.gitignore
+.env
+.ruff_cache/
+.pytest_cache/
+models/*.h5
+pgdata/
+*.md

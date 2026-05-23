@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.python-version
+.ruff_cache/
+.pytest_cache/
+
+# Entorno (secretos)
+.env
+
+# Artefactos ML
+*.h5
+models/*.h5
+
+# Datos / volumenes
+pgdata/
+
+# IDE
+.idea/
+.vscode/
