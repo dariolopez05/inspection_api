@@ -26,19 +26,21 @@ TensorFlow-CPU / Keras (MobileNetV2) · boto3 + MinIO · Docker Compose · uv
 app/
 ├── main.py                # FastAPI + lifespan (carga modelo y clientes S3 a app.state)
 ├── api/
-│   ├── deps.py            # get_db
+│   ├── deps.py            # get_db, rate_limit
 │   └── routers/
 │       ├── inspect.py     # POST /inspect
-│       ├── history.py     # GET /history/{plate_number}
+│       ├── history.py     # GET /history/{plate_number} (paginado)
 │       └── images.py      # GET /inspections/{id}/image
 ├── core/
 │   ├── config.py          # Settings (pydantic-settings, lee .env)
-│   └── security.py        # require_api_key (X-API-Key)
+│   ├── security.py        # require_api_key (X-API-Key)
+│   ├── ratelimit.py       # RateLimiter (ventana fija en memoria)
+│   └── errors.py          # handlers de error con formato uniforme
 ├── db/
 │   ├── base.py            # DeclarativeBase
 │   ├── session.py         # engine + SessionLocal
 │   └── models/inspection.py
-├── schemas/inspection.py  # InspectionResult, InspectionRead, ImageURL
+├── schemas/inspection.py  # InspectionResult, InspectionRead, ImageURL, InspectionPage
 ├── ml/
 │   ├── preprocessing.py   # bytes -> tensor (1,224,224,3) en [0,1]
 │   └── classifier.py      # load_classifier + predict
@@ -90,6 +92,7 @@ docker compose exec api uv run alembic upgrade head
 |----------|-------------|-------------|
 | `DATABASE_URL` | — | `postgresql+psycopg://…` (en compose la api usa host `db`) |
 | `API_KEY` | — | Clave estática para el header `X-API-Key` |
+| `RATE_LIMIT_PER_MINUTE` | `120` | Peticiones permitidas por API key y minuto |
 | `MODEL_PATH` | `models/damage_classifier.h5` | Ruta al `.h5` que carga el `lifespan` |
 | `S3_ENDPOINT_URL` | — | Endpoint que la api usa para **subir** (en compose `http://minio:9000`) |
 | `S3_PUBLIC_ENDPOINT_URL` | = `S3_ENDPOINT_URL` | Endpoint con el que se **firman** las presigned URLs (`http://localhost:9000`) |
@@ -100,13 +103,14 @@ docker compose exec api uv run alembic upgrade head
 
 ## API
 
-Todos los endpoints (salvo `/health`) requieren el header `X-API-Key`.
+Todos los endpoints (salvo `/health`) requieren el header `X-API-Key` y están sujetos a
+[rate limiting](#rate-limiting). Los errores siguen un [formato uniforme](#formato-de-errores).
 
 | Método | Ruta | Descripción | Respuestas |
 |--------|------|-------------|------------|
 | `GET`  | `/health` | Liveness (sin auth) | `200 {"status":"ok"}` |
 | `POST` | `/inspect` | Clasifica una foto y persiste la inspección | `201` · `400` no-imagen · `422` imagen inválida · `503` sin modelo |
-| `GET`  | `/history/{plate_number}` | Inspecciones de una matrícula (desc por fecha) | `200 [InspectionRead]` |
+| `GET`  | `/history/{plate_number}` | Inspecciones de una matrícula, paginadas (desc por fecha) | `200 InspectionPage` |
 | `GET`  | `/inspections/{id}/image` | Presigned URL de la foto | `200 ImageURL` · `404` no existe / sin imagen |
 
 ### `POST /inspect`
@@ -134,6 +138,36 @@ autoriza).
 curl -H "X-API-Key: dev-secret-api-key-change-me" http://localhost:8000/inspections/1/image
 # -> {"url":"http://localhost:9000/car-images/ABC123/1.jpg?X-Amz-Signature=...","expires_in":3600}
 ```
+
+### `GET /history/{plate_number}`
+
+Paginado con `limit` (1-100, def. 20) y `offset` (≥0). Devuelve un envelope con el total.
+
+```bash
+curl -H "X-API-Key: dev-secret-api-key-change-me" \
+  "http://localhost:8000/history/ABC123?limit=20&offset=0"
+# -> {"items":[InspectionRead, ...], "total":42, "limit":20, "offset":0}
+```
+
+## Rate limiting
+
+Límite por API key y ventana de 1 minuto (`RATE_LIMIT_PER_MINUTE`, 120 por defecto). Cada
+respuesta incluye `X-RateLimit-Limit` y `X-RateLimit-Remaining`; al superar el límite la API
+responde `429` con cabecera `Retry-After`.
+
+> El contador vive **en memoria del proceso**: con un solo worker (dev local) funciona como
+> límite global. Con varios workers o instancias sería por-proceso; para un límite real
+> compartido se usaría un store externo (p. ej. Redis).
+
+## Formato de errores
+
+Todos los errores siguen la misma forma:
+
+```json
+{ "error": { "status": 404, "message": "Inspeccion no encontrada.", "path": "/inspections/9999/image" } }
+```
+
+Los errores de validación (`422`) añaden `details` con los campos que fallaron.
 
 ## Almacenamiento de imágenes (MinIO / S3)
 

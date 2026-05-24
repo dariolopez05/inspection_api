@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     database_url: str
     api_key: str
     model_path: str = "models/damage_classifier.h5"
+    rate_limit_per_minute: int = 120
 
     s3_endpoint_url: str
     s3_public_endpoint_url: str | None = None  # host que ve el cliente; firma las presigned URLs

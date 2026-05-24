@@ -24,3 +24,10 @@ class InspectionRead(BaseModel):
 class ImageURL(BaseModel):
     url: str
     expires_in: int
+
+
+class InspectionPage(BaseModel):
+    items: list[InspectionRead]
+    total: int
+    limit: int
+    offset: int

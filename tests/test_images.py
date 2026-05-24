@@ -18,7 +18,7 @@ async def test_image_returns_presigned_url(
         files={"file": ("car.jpg", image_bytes, "image/jpeg")},
     )
     history = await client.get("/history/IMG001", headers={"X-API-Key": api_key})
-    inspection_id = history.json()[0]["id"]  # InspectionResult no trae id; lo sacamos de history
+    inspection_id = history.json()["items"][0]["id"]  # InspectionResult no trae id; lo sacamos de history
 
     response = await client.get(
         f"/inspections/{inspection_id}/image", headers={"X-API-Key": api_key}

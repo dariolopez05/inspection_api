@@ -13,6 +13,7 @@ from sqlalchemy.pool import StaticPool
 import app.db.models  # noqa: F401  registra modelos en Base.metadata
 from app.api.deps import get_db
 from app.core.config import get_settings
+from app.core.ratelimit import RateLimiter
 from app.db.base import Base
 from app.main import app
 
@@ -58,6 +59,7 @@ async def client(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> AsyncI
     app.state.s3_public = MagicMock()
     app.state.s3_public.generate_presigned_url.return_value = "http://localhost:9000/signed-url"
     app.state.s3_bucket = "test-bucket"
+    app.state.rate_limiter = RateLimiter(limit=1000)
     monkeypatch.setattr(
         "app.api.routers.inspect.predict", lambda model, tensor: (True, 0.9876)
     )
