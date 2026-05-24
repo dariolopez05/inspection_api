@@ -5,7 +5,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI
 
-from app.api.routers import history, inspect
+from app.api.routers import history, images, inspect
 from app.core.config import get_settings
 from app.core.security import require_api_key
 from app.ml.classifier import load_classifier
@@ -29,16 +29,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.s3 = get_s3_client()
     app.state.s3_bucket = settings.s3_bucket
     ensure_bucket(app.state.s3, app.state.s3_bucket)
+    # cliente para firmar presigned URLs con el host que ve el cliente (no el host interno de docker)
+    app.state.s3_public = get_s3_client(settings.s3_public_endpoint_url)
 
     yield
 
     app.state.model = None
     app.state.s3 = None
+    app.state.s3_public = None
 
 
 app = FastAPI(title="Car Inspection API", version="0.1.0", lifespan=lifespan)
 app.include_router(inspect.router, dependencies=[Depends(require_api_key)])
 app.include_router(history.router, dependencies=[Depends(require_api_key)])
+app.include_router(images.router, dependencies=[Depends(require_api_key)])
 
 
 @app.get("/health", tags=["meta"])

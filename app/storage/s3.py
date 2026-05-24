@@ -16,11 +16,11 @@ EXT_BY_CONTENT_TYPE = {
 }
 
 
-def get_s3_client() -> BaseClient:
+def get_s3_client(endpoint_url: str | None = None) -> BaseClient:
     settings = get_settings()
     return boto3.client(
         "s3",
-        endpoint_url=settings.s3_endpoint_url,
+        endpoint_url=endpoint_url or settings.s3_endpoint_url,
         aws_access_key_id=settings.s3_access_key,
         aws_secret_access_key=settings.s3_secret_key,
         region_name=settings.s3_region,
@@ -52,3 +52,11 @@ def upload_image(
     client: BaseClient, bucket: str, key: str, data: bytes, content_type: str
 ) -> None:
     client.put_object(Bucket=bucket, Key=key, Body=data, ContentType=content_type)
+
+
+def generate_presigned_url(client: BaseClient, bucket: str, key: str, expires_in: int) -> str:
+    return client.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": bucket, "Key": key},
+        ExpiresIn=expires_in,
+    )

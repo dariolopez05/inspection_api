@@ -16,10 +16,12 @@ class Settings(BaseSettings):
     model_path: str = "models/damage_classifier.h5"
 
     s3_endpoint_url: str
+    s3_public_endpoint_url: str | None = None  # host que ve el cliente; firma las presigned URLs
     s3_access_key: str
     s3_secret_key: str
     s3_bucket: str = "car-images"
     s3_region: str = "us-east-1"
+    s3_presigned_expiry: int = 3600
 
 
 @lru_cache

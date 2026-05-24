@@ -55,6 +55,8 @@ async def client(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> AsyncI
     app.dependency_overrides[get_db] = override_get_db
     app.state.model = object()
     app.state.s3 = MagicMock()
+    app.state.s3_public = MagicMock()
+    app.state.s3_public.generate_presigned_url.return_value = "http://localhost:9000/signed-url"
     app.state.s3_bucket = "test-bucket"
     monkeypatch.setattr(
         "app.api.routers.inspect.predict", lambda model, tensor: (True, 0.9876)

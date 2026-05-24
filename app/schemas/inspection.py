@@ -19,3 +19,8 @@ class InspectionRead(BaseModel):
     confidence: float
     image_key: str | None = None
     created_at: datetime
+
+
+class ImageURL(BaseModel):
+    url: str
+    expires_in: int
