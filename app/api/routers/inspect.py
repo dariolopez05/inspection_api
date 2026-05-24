@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import get_db
+from app.core.metrics import INFERENCE, PREDICTIONS
 from app.db.models.inspection import Inspection
 from app.ml.classifier import predict
 from app.ml.preprocessing import preprocess_image
@@ -41,7 +42,9 @@ async def inspect(
     except Exception as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Imagen invalida.") from exc
 
-    is_damaged, confidence = await run_in_threadpool(predict, model, tensor)
+    with INFERENCE.time():
+        is_damaged, confidence = await run_in_threadpool(predict, model, tensor)
+    PREDICTIONS.labels(outcome="damaged" if is_damaged else "intact").inc()
 
     record = Inspection(plate_number=plate_number, is_damaged=is_damaged, confidence=confidence)
     db.add(record)

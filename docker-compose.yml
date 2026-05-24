@@ -77,7 +77,38 @@ services:
     volumes:
       - pgadmin_data:/var/lib/pgadmin
 
+  prometheus:
+    image: prom/prometheus
+    container_name: inspection_prometheus
+    restart: unless-stopped
+    depends_on:
+      - api
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana
+    container_name: inspection_grafana
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+
 volumes:
   pgdata:
   pgadmin_data:
   minio_data:
+  prometheus_data:
+  grafana_data:

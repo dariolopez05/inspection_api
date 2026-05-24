@@ -18,7 +18,7 @@ recuperable después mediante una URL temporal firmada.
 ## Stack
 
 FastAPI · SQLAlchemy 2.0 + Alembic · PostgreSQL 16 · Pillow + NumPy ·
-TensorFlow-CPU / Keras (MobileNetV2) · boto3 + MinIO · Docker Compose · uv
+TensorFlow-CPU / Keras (MobileNetV2) · boto3 + MinIO · prometheus-client · Docker Compose · uv
 
 ## Arquitectura
 
@@ -35,7 +35,10 @@ app/
 │   ├── config.py          # Settings (pydantic-settings, lee .env)
 │   ├── security.py        # require_api_key (X-API-Key)
 │   ├── ratelimit.py       # RateLimiter (ventana fija en memoria)
-│   └── errors.py          # handlers de error con formato uniforme
+│   ├── errors.py          # handlers de error con formato uniforme
+│   ├── logging.py         # JsonFormatter + request_id (ContextVar)
+│   ├── middleware.py      # request-id, latencia y métricas por request
+│   └── metrics.py         # contadores/histogramas Prometheus
 ├── db/
 │   ├── base.py            # DeclarativeBase
 │   ├── session.py         # engine + SessionLocal
@@ -85,6 +88,8 @@ docker compose exec api uv run alembic upgrade head
 | `db`      | 5432         | PostgreSQL 16 |
 | `minio`   | 9000 / 9001  | S3 API / consola web |
 | `pgadmin` | 5050         | Inspección visual de la DB (host=`db`, port=`5432`) |
+| `prometheus` | 9090      | Scrapea `/metrics` y guarda series temporales |
+| `grafana` | 3000         | Dashboards (login `GRAFANA_USER`/`GRAFANA_PASSWORD`, def. `admin`/`admin`) |
 
 ## Variables de entorno
 
@@ -109,6 +114,7 @@ Todos los endpoints (salvo `/health`) requieren el header `X-API-Key` y están s
 | Método | Ruta | Descripción | Respuestas |
 |--------|------|-------------|------------|
 | `GET`  | `/health` | Liveness (sin auth) | `200 {"status":"ok"}` |
+| `GET`  | `/metrics` | Métricas Prometheus (sin auth) | `200` texto plano |
 | `POST` | `/inspect` | Clasifica una foto y persiste la inspección | `201` · `400` no-imagen · `422` imagen inválida · `503` sin modelo |
 | `GET`  | `/history/{plate_number}` | Inspecciones de una matrícula, paginadas (desc por fecha) | `200 InspectionPage` |
 | `GET`  | `/inspections/{id}/image` | Presigned URL de la foto | `200 ImageURL` · `404` no existe / sin imagen |
@@ -168,6 +174,103 @@ Todos los errores siguen la misma forma:
 ```
 
 Los errores de validación (`422`) añaden `details` con los campos que fallaron.
+
+## Observabilidad
+
+Tres señales, todo local y sin dependencias pesadas (stdlib `logging` + `prometheus-client`).
+
+### Logs estructurados (JSON)
+
+Todos los logs de la app salen como JSON (un `logging.Formatter` custom enganchado al root
+logger), filtrables por campo con `jq`, Loki, etc.:
+
+```json
+{"ts":"2026-05-24T10:48:47Z","level":"info","logger":"app","message":"modelo cargado","model_path":"models/damage_classifier.h5"}
+```
+
+Para adjuntar campos extra: `logger.info("msg", extra={"extra_fields": {...}})`.
+
+> Las líneas `INFO: Uvicorn running...` quedan en texto plano porque uvicorn usa sus propios
+> handlers (no propagan al root). Las líneas `I0000... cpu_feature_guard` las escribe el C++
+> de TensorFlow directo a stderr, por debajo de Python. Ninguna es capturable por el formatter.
+
+### Request-id y latencia
+
+Un middleware (`app/core/middleware.py`) asigna a cada petición un `request_id` (reutiliza el
+header `X-Request-ID` entrante o genera un UUID), lo devuelve en la respuesta y emite una línea
+por request con método, ruta, status y `latency_ms`:
+
+```json
+{"ts":"...","level":"info","logger":"app.request","request_id":"mi-trace-123","message":"request","method":"POST","path":"/inspect","status":201,"latency_ms":142.0}
+```
+
+El `request_id` se propaga vía `ContextVar`, así que **cualquier** log emitido durante esa
+petición lo incluye automáticamente (sin pasarlo a mano). El `ContextVar` es seguro entre
+peticiones concurrentes (cada tarea async tiene su copia).
+
+### Métricas (`/metrics`, modelo pull de Prometheus)
+
+`GET /metrics` expone en formato Prometheus:
+
+| Métrica | Tipo | Labels |
+|---------|------|--------|
+| `http_requests_total` | Counter | `method`, `path`, `status` |
+| `http_request_duration_seconds` | Histogram | `method`, `path` |
+| `inference_duration_seconds` | Histogram | — (tiempo del modelo, aislado) |
+| `predictions_total` | Counter | `outcome` (`damaged`/`intact`) |
+
+> **Cardinalidad:** la label `path` es la *plantilla* de ruta (`/history/{plate_number}`), no la
+> ruta real (`/history/ABC123`). Usar la ruta real crearía una serie por cada matrícula →
+> explosión de cardinalidad que tumba a Prometheus.
+
+```bash
+curl http://localhost:8000/metrics
+```
+
+### Visualización (Prometheus + Grafana)
+
+El stack viene incluido en compose y auto-provisionado:
+
+```
+api:8000/metrics ──scrape 15s──> Prometheus:9090 ──PromQL──> Grafana:3000
+```
+
+- **Prometheus** (http://localhost:9090) — config en `monitoring/prometheus.yml`; scrapea el
+  job `car-inspection-api` (`api:8000`). Estado de targets en *Status → Targets*. Permite
+  lanzar PromQL a mano, p. ej. `rate(http_requests_total[1m])`.
+- **Grafana** (http://localhost:3000, `admin`/`admin`) — datasource Prometheus y un dashboard
+  se cargan solos desde `monitoring/grafana/provisioning/`.
+
+Configuración (todo versionado en `monitoring/`, nada se toca a mano en la UI → reproducible):
+
+```
+monitoring/
+├── prometheus.yml                              # qué scrapear (job api:8000)
+└── grafana/
+    ├── provisioning/
+    │   ├── datasources/datasource.yml          # datasource Prometheus (uid=prometheus)
+    │   └── dashboards/dashboards.yml           # provider que carga los dashboards
+    └── dashboards/
+        └── car-inspection.json                 # dashboard (4 paneles)
+```
+
+Para verlo:
+
+```bash
+docker compose up -d prometheus grafana
+# 1. Genera tráfico: varios POST /inspect y algún GET /history.
+# 2. Abre http://localhost:3000  (admin / admin).
+# 3. Menú lateral -> Dashboards -> "Car Inspection API".
+```
+
+El dashboard (refresco 10s) trae 4 paneles:
+
+| Panel | PromQL |
+|-------|--------|
+| Peticiones/segundo por ruta | `sum by (path) (rate(http_requests_total[1m]))` |
+| Latencia HTTP p95 | `histogram_quantile(0.95, sum by (le, path) (rate(http_request_duration_seconds_bucket[5m])))` |
+| Latencia de inferencia p95 | `histogram_quantile(0.95, sum by (le) (rate(inference_duration_seconds_bucket[5m])))` |
+| Predicciones damaged vs intact | `sum by (outcome) (predictions_total)` |
 
 ## Almacenamiento de imágenes (MinIO / S3)
 
